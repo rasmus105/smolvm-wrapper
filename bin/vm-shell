@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$(realpath "$0")")/common.sh"
+
+vm_run sh -c 'cd /workspace && exec zsh -l'

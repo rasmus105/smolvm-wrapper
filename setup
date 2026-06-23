@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+IMAGE_NAME="${IMAGE_NAME:-localhost:5000/smolvm-agent:latest}"
+
+echo "=== smolvm-wrapper setup ==="
+
+# Verify smolvm
+if ! command -v smolvm &>/dev/null; then
+  echo "Error: smolvm not found."
+  echo "Install: curl -sSL https://smolmachines.com/install.sh | bash"
+  exit 1
+fi
+
+# Verify Docker
+if ! command -v docker &>/dev/null; then
+  echo "Error: docker not found."
+  echo "Install Docker: https://docs.docker.com/engine/install/"
+  exit 1
+fi
+
+ARCH="$(uname -m)"
+case "$ARCH" in
+  arm64|aarch64) PLATFORM="linux/arm64" ;;
+  x86_64)        PLATFORM="linux/amd64" ;;
+  *)             echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
+esac
+
+echo "[1/3] Starting local Docker registry..."
+if ! docker ps --format '{{.Names}}' | grep -q '^smolvm-registry$'; then
+  docker start smolvm-registry 2>/dev/null ||
+    docker run -d -p 5000:5000 --name smolvm-registry registry:2
+fi
+
+echo "[2/3] Building agent image for $PLATFORM..."
+docker buildx build \
+  --platform "$PLATFORM" \
+  -t "$IMAGE_NAME" \
+  --load \
+  -f "$REPO_ROOT/images/agent.Dockerfile" \
+  "$REPO_ROOT"
+
+echo "[3/3] Pushing image to local registry ($IMAGE_NAME)..."
+docker push "$IMAGE_NAME"
+
+echo ""
+echo "=== Setup complete ==="
+echo "Link wrapper scripts to your PATH:"
+echo "  ln -sf $REPO_ROOT/bin/vm-opencode ~/.local/bin/vm-opencode"
+echo "  ln -sf $REPO_ROOT/bin/vm-claude   ~/.local/bin/vm-claude"
+echo "  ln -sf $REPO_ROOT/bin/vm-shell    ~/.local/bin/vm-shell"
+echo "  ln -sf $REPO_ROOT/bin/vm-reset    ~/.local/bin/vm-reset"
+echo ""
+echo "Then use:"
+echo "  cd ~/git/my-project && vm-opencode"

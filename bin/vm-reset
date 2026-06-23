@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$(realpath "$0")")/common.sh"
+
+echo "Deleting machine '$MACHINE_NAME'..."
+smolvm machine delete "$MACHINE_NAME" -f 2>/dev/null || true
+rm -f "/tmp/smolvm-${MACHINE_NAME}.mount"
+echo "Done. The machine will be recreated on next vm-opencode/vm-claude/vm-shell invocation."
