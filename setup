@@ -1,56 +1,97 @@
 #!/usr/bin/env bash
+# Builds images/agent.Dockerfile, packs it into a portable .smolmachine, and
+# (re)creates the persistent `dev-box` machine from that pack. Re-run this
+# any time the Dockerfile or the dotfiles repo it pulls from changes.
+#
+# Assumes a working patched smolvm is already set up -- see FASTEST_APPROACH.md.
 set -euo pipefail
+cd "$(dirname "$(realpath "$0")")"
+source config/smolvm-env.sh
 
-REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
-IMAGE_NAME="${IMAGE_NAME:-localhost:5000/smolvm-agent:latest}"
+REGISTRY_CONTAINER="smolvm-wrapper-registry"
+REGISTRY_PORT=5000
 
-echo "=== smolvm-wrapper setup ==="
-
-# Verify smolvm
-if ! command -v smolvm &>/dev/null; then
-  echo "Error: smolvm not found."
-  echo "Install: curl -sSL https://smolmachines.com/install.sh | bash"
+# The registry must be reachable BY IP from inside the guest VM -- "localhost"
+# there resolves to the guest's own loopback, not the host (see
+# FASTEST_APPROACH.md's "Known constraints"). Override with HOST_IP=... if
+# autodetection picks the wrong interface.
+host_ip() {
+  local ip
+  for iface in en0 en1; do
+    ip=$(ipconfig getifaddr "$iface" 2>/dev/null || true)
+    if [[ -n "$ip" ]]; then
+      echo "$ip"
+      return
+    fi
+  done
+  echo "error: could not autodetect a LAN IP (tried en0, en1)." >&2
+  echo "Set HOST_IP=<your-lan-ip> and re-run." >&2
   exit 1
+}
+
+HOST_IP="${HOST_IP:-$(host_ip)}"
+REGISTRY_REF="$HOST_IP:$REGISTRY_PORT/$IMAGE_TAG"
+
+ALLOW_HOST_ARGS=()
+for h in "${ALLOWED_HOSTS[@]}"; do
+  ALLOW_HOST_ARGS+=(--allow-host "$h")
+done
+
+SSH_AGENT_ARGS=()
+if [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
+  SSH_AGENT_ARGS+=(--ssh-agent)
 fi
 
-# Verify Docker
-if ! command -v docker &>/dev/null; then
-  echo "Error: docker not found."
-  echo "Install Docker: https://docs.docker.com/engine/install/"
-  exit 1
-fi
+mkdir -p "$BUILD_DIR"
 
-ARCH="$(uname -m)"
-case "$ARCH" in
-  arm64|aarch64) PLATFORM="linux/arm64" ;;
-  x86_64)        PLATFORM="linux/amd64" ;;
-  *)             echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
-esac
+echo "==> Building $IMAGE_TAG from images/agent.Dockerfile..."
+docker build -f images/agent.Dockerfile -t "$IMAGE_TAG" .
 
-echo "[1/3] Starting local Docker registry..."
-if ! docker ps --format '{{.Names}}' | grep -q '^smolvm-registry$'; then
-  docker start smolvm-registry 2>/dev/null ||
-    docker run -d -p 5000:5000 --name smolvm-registry registry:2
-fi
+echo "==> Starting local registry on port $REGISTRY_PORT..."
+docker rm -f "$REGISTRY_CONTAINER" >/dev/null 2>&1 || true
+docker run -d -p "$REGISTRY_PORT:5000" --name "$REGISTRY_CONTAINER" registry:2 >/dev/null
 
-echo "[2/3] Building agent image for $PLATFORM..."
-docker buildx build \
-  --platform "$PLATFORM" \
-  -t "$IMAGE_NAME" \
-  --load \
-  -f "$REPO_ROOT/images/agent.Dockerfile" \
-  "$REPO_ROOT"
+cleanup_registry() {
+  echo "==> Stopping local registry..."
+  docker stop "$REGISTRY_CONTAINER" >/dev/null 2>&1 || true
+  docker rm "$REGISTRY_CONTAINER" >/dev/null 2>&1 || true
+}
+trap cleanup_registry EXIT
 
-echo "[3/3] Pushing image to local registry ($IMAGE_NAME)..."
-docker push "$IMAGE_NAME"
+# Push via "localhost" -- Docker trusts that as insecure/plain-HTTP by
+# default, but not an arbitrary LAN IP (it'd demand TLS and fail). The
+# registry's storage is shared regardless of which host:port reached it, so
+# this is the same repository smolvm will pull via $REGISTRY_REF below.
+echo "==> Pushing to localhost:$REGISTRY_PORT/$IMAGE_TAG..."
+docker tag "$IMAGE_TAG" "localhost:$REGISTRY_PORT/$IMAGE_TAG"
+docker push "localhost:$REGISTRY_PORT/$IMAGE_TAG"
+
+# `pack create --from-vm` (below) only works on a VM created from a registry
+# reference, not a local archive -- it re-pulls the manifest to enumerate
+# base layers. So we build a throwaway source VM here purely to hand to pack.
+echo "==> Building source VM ($SOURCE_MACHINE_NAME) from the registry image..."
+smolvm machine delete --name "$SOURCE_MACHINE_NAME" -f >/dev/null 2>&1 || true
+smolvm machine create --name "$SOURCE_MACHINE_NAME" \
+  --image "$REGISTRY_REF" \
+  --storage "$VM_STORAGE_GB" --overlay "$VM_OVERLAY_GB" --net \
+  --allow-host "$HOST_IP" "${ALLOW_HOST_ARGS[@]}"
+smolvm machine start --name "$SOURCE_MACHINE_NAME"
+smolvm machine stop --name "$SOURCE_MACHINE_NAME"
+
+echo "==> Packing portable .smolmachine..."
+rm -f "$PACK_FILE" "$PACK_SIDECAR"
+smolvm pack create --from-vm "$SOURCE_MACHINE_NAME" -o "$PACK_FILE"
+
+echo "==> Cleaning up source VM..."
+smolvm machine delete --name "$SOURCE_MACHINE_NAME" -f
+
+echo "==> Recreating '$MACHINE_NAME' from the pack..."
+smolvm machine delete --name "$MACHINE_NAME" -f >/dev/null 2>&1 || true
+rm -f "/tmp/smolvm-${MACHINE_NAME}.mount"
+smolvm machine create --name "$MACHINE_NAME" --from "$PACK_SIDECAR" \
+  --cpus "$VM_CPUS" --mem "$VM_MEM" --net \
+  "${ALLOW_HOST_ARGS[@]}" "${SSH_AGENT_ARGS[@]}"
 
 echo ""
-echo "=== Setup complete ==="
-echo "Link wrapper scripts to your PATH:"
-echo "  ln -sf $REPO_ROOT/bin/vm-opencode ~/.local/bin/vm-opencode"
-echo "  ln -sf $REPO_ROOT/bin/vm-claude   ~/.local/bin/vm-claude"
-echo "  ln -sf $REPO_ROOT/bin/vm-shell    ~/.local/bin/vm-shell"
-echo "  ln -sf $REPO_ROOT/bin/vm-reset    ~/.local/bin/vm-reset"
-echo ""
-echo "Then use:"
-echo "  cd ~/git/my-project && vm-opencode"
+echo "Done. '$MACHINE_NAME' is ready. Run vm-shell / vm-opencode / vm-claude to use it."
+echo "(First start after this does a one-time ~1min cost; every start after that is <1s.)"

@@ -4,5 +4,5 @@ source "$(dirname "$(realpath "$0")")/common.sh"
 
 vm_run sh -c '
   [ -f /tmp/.claude-api-key ] && export ANTHROPIC_API_KEY="$(cat /tmp/.claude-api-key)"
-  cd /workspace && exec claude --dangerously-skip-permissions
+  exec claude --dangerously-skip-permissions
 '

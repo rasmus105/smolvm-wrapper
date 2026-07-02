@@ -1,27 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VM_IMAGE="${VM_IMAGE:-localhost:5000/smolvm-agent:latest}"
-VM_CPUS="${VM_CPUS:-4}"
-VM_MEM="${VM_MEM:-4096}"
-MACHINE_NAME="smolvm-agent"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../config/smolvm-env.sh"
 
 OPENCODE_AUTH="$HOME/.local/share/opencode/auth.json"
 CLAUDE_AUTH="$HOME/.local/share/claude-code/auth.json"
-
-ALLOWED_HOSTS=(
-  "localhost"
-  "api.anthropic.com"
-  "api.openai.com"
-  "openrouter.ai"
-  "models.dev"
-  "github.com"
-  "api.github.com"
-  "raw.githubusercontent.com"
-  "registry.npmjs.org"
-  "archive.ubuntu.com"
-  "security.ubuntu.com"
-)
 
 VOLUME_ARGS=(-v "$PWD:/workspace")
 if [[ -d "${OPENCODE_AUTH%/*}" ]]; then
@@ -41,27 +25,13 @@ _machine_is_running() {
   echo "$status" | grep -qi '"running"'
 }
 
+# Machine creation lives in ./setup (it needs Docker + the registry + a
+# source VM to pack from) -- this just ensures the already-created machine
+# has the right /workspace mount for wherever you're calling vm-* from.
 _ensure_machine() {
   if ! _machine_exists; then
-    local init_cmd='
-      if [ -f /mnt/opencode-auth/auth.json ]; then
-        mkdir -p "$HOME/.local/share/opencode"
-        ln -sf /mnt/opencode-auth/auth.json "$HOME/.local/share/opencode/auth.json"
-      fi
-      if [ -f /mnt/claude-auth/auth.json ]; then
-        KEY=$(jq -r .apiKey /mnt/claude-auth/auth.json 2>/dev/null)
-        if [ -n "$KEY" ] && [ "$KEY" != "null" ]; then
-          echo "$KEY" > /tmp/.claude-api-key
-        fi
-      fi
-    '
-    local create_args=(--image "$VM_IMAGE" --cpus "$VM_CPUS" --mem "$VM_MEM" --net)
-    for h in "${ALLOWED_HOSTS[@]}"; do
-      create_args+=(--allow-host "$h")
-    done
-    [[ -n "${SSH_AUTH_SOCK:-}" ]] && create_args+=(--ssh-agent)
-    smolvm machine create "${create_args[@]}" "${VOLUME_ARGS[@]}" --init "$init_cmd" "$MACHINE_NAME"
-    return
+    echo "Machine '$MACHINE_NAME' doesn't exist yet. Run ./setup first." >&2
+    exit 1
   fi
 
   local state_file="/tmp/smolvm-${MACHINE_NAME}.mount"
@@ -70,17 +40,43 @@ _ensure_machine() {
 
   if [[ "$last_mount" != "$PWD" ]]; then
     if _machine_is_running; then
-      smolvm machine stop --name "$MACHINE_NAME" 2>/dev/null || true
+      smolvm machine stop --name "$MACHINE_NAME"
     fi
-    smolvm machine update "$MACHINE_NAME" "${VOLUME_ARGS[@]}" 2>/dev/null || true
+    smolvm machine update --name "$MACHINE_NAME" "${VOLUME_ARGS[@]}"
     echo "$PWD" > "$state_file"
   fi
 }
 
+# Best-effort: symlink host auth into place if the mounts are present. Runs
+# on every vm_run (not just at create time) so refreshed host auth picks up
+# without needing a VM restart.
+_sync_auth() {
+  smolvm machine exec --name "$MACHINE_NAME" -e "HOME=$DEV_HOME" -- sh -c '
+    if [ -f /mnt/opencode-auth/auth.json ]; then
+      mkdir -p "$HOME/.local/share/opencode"
+      ln -sf /mnt/opencode-auth/auth.json "$HOME/.local/share/opencode/auth.json"
+    fi
+    if [ -f /mnt/claude-auth/auth.json ]; then
+      KEY=$(jq -r .apiKey /mnt/claude-auth/auth.json 2>/dev/null)
+      if [ -n "$KEY" ] && [ "$KEY" != "null" ]; then
+        echo "$KEY" > /tmp/.claude-api-key
+      fi
+    fi
+  ' >/dev/null 2>&1 || true
+}
+
+# Runs "$@" interactively inside the machine, with /workspace = $PWD.
+#
+# Explicit PATH/HOME: smolvm's ad-hoc exec containers run as root with a
+# bare-bones PATH rather than the image's configured `dev` user/env (see
+# FASTEST_APPROACH.md) -- without this, none of the tools installed for
+# `dev` (node, opencode, claude, zig, ...) would resolve.
 vm_run() {
   _ensure_machine
   if ! _machine_is_running; then
     smolvm machine start --name "$MACHINE_NAME"
   fi
-  exec smolvm machine exec --name "$MACHINE_NAME" -it -- "$@"
+  _sync_auth
+  exec smolvm machine exec --name "$MACHINE_NAME" -it \
+    -e "PATH=$DEV_PATH" -e "HOME=$DEV_HOME" -w /workspace -- "$@"
 }
