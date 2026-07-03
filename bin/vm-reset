@@ -1,25 +1,23 @@
 #!/usr/bin/env bash
+# Wipes the machine assigned to the CURRENT directory and claims a fresh one
+# (from the spare pool if one's ready, otherwise creates one -- same as any
+# other vm-* invocation). Does not touch other directories' machines or
+# rebuild the image; that's ./setup's job.
 set -euo pipefail
 source "$(dirname "$(realpath "$0")")/common.sh"
 
-echo "Deleting machine '$MACHINE_NAME'..."
-smolvm machine delete --name "$MACHINE_NAME" -f 2>/dev/null || true
-rm -f "/tmp/smolvm-${MACHINE_NAME}.mount"
+dir="$(pwd -P)"
+hash="$(_pwd_hash "$dir")"
+machine="$(_assigned_machine_for_hash "$hash")"
 
-if [[ -f "$PACK_SIDECAR" ]]; then
-  echo "Recreating '$MACHINE_NAME' from the existing pack (same image, clean state)..."
-  ALLOW_HOST_ARGS=()
-  for h in "${ALLOWED_HOSTS[@]}"; do
-    ALLOW_HOST_ARGS+=(--allow-host "$h")
-  done
-  SSH_AGENT_ARGS=()
-  if [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
-    SSH_AGENT_ARGS+=(--ssh-agent)
-  fi
-  smolvm machine create --name "$MACHINE_NAME" --from "$PACK_SIDECAR" \
-    --cpus "$VM_CPUS" --mem "$VM_MEM" --net \
-    "${ALLOW_HOST_ARGS[@]}" "${SSH_AGENT_ARGS[@]}"
-  echo "Done."
+if [[ -n "$machine" ]]; then
+  echo "Deleting machine '$machine' (was assigned to this directory)..."
+  smolvm machine delete --name "$machine" -f 2>/dev/null || true
+  _with_pool_lock _remove_assignment "$hash"
 else
-  echo "No pack found at $PACK_SIDECAR -- run ./setup to build one."
+  echo "No machine was assigned to this directory yet."
 fi
+
+echo "Claiming a fresh machine for this directory..."
+machine="$(resolve_machine_for_cwd)"
+echo "Done. '$machine' is ready for $dir."

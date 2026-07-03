@@ -7,51 +7,28 @@ source "$SCRIPT_DIR/../config/smolvm-env.sh"
 OPENCODE_AUTH="$HOME/.local/share/opencode/auth.json"
 CLAUDE_AUTH="$HOME/.local/share/claude-code/auth.json"
 
-VOLUME_ARGS=(-v "$PWD:/workspace")
+# Static across every directory's machine (unlike /workspace, which is set
+# per-machine at claim time in resolve_machine_for_cwd) -- read by lib-pool.sh.
+AUTH_VOLUME_ARGS=()
 if [[ -d "${OPENCODE_AUTH%/*}" ]]; then
-  VOLUME_ARGS+=(-v "${OPENCODE_AUTH%/*}:/mnt/opencode-auth:ro")
+  AUTH_VOLUME_ARGS+=(-v "${OPENCODE_AUTH%/*}:/mnt/opencode-auth:ro")
 fi
 if [[ -d "${CLAUDE_AUTH%/*}" ]]; then
-  VOLUME_ARGS+=(-v "${CLAUDE_AUTH%/*}:/mnt/claude-auth:ro")
+  AUTH_VOLUME_ARGS+=(-v "${CLAUDE_AUTH%/*}:/mnt/claude-auth:ro")
 fi
 
-_machine_exists() {
-  smolvm machine ls --json 2>/dev/null | grep -q "\"name\": \"$MACHINE_NAME\""
-}
-
 _machine_is_running() {
-  local status
-  status=$(smolvm machine status --name "$MACHINE_NAME" --json 2>/dev/null || echo "{}")
+  local name="$1" status
+  status=$(smolvm machine status --name "$name" --json 2>/dev/null || echo "{}")
   echo "$status" | grep -qi '"running"'
 }
 
-# Machine creation lives in ./setup (it needs Docker + the registry + a
-# source VM to pack from) -- this just ensures the already-created machine
-# has the right /workspace mount for wherever you're calling vm-* from.
-_ensure_machine() {
-  if ! _machine_exists; then
-    echo "Machine '$MACHINE_NAME' doesn't exist yet. Run ./setup first." >&2
-    exit 1
-  fi
-
-  local state_file="/tmp/smolvm-${MACHINE_NAME}.mount"
-  local last_mount
-  last_mount=$(cat "$state_file" 2>/dev/null || echo "")
-
-  if [[ "$last_mount" != "$PWD" ]]; then
-    if _machine_is_running; then
-      smolvm machine stop --name "$MACHINE_NAME"
-    fi
-    smolvm machine update --name "$MACHINE_NAME" "${VOLUME_ARGS[@]}"
-    echo "$PWD" > "$state_file"
-  fi
-}
-
 # Best-effort: symlink host auth into place if the mounts are present. Runs
-# on every vm_run (not just at create time) so refreshed host auth picks up
+# on every vm_run (not just at claim time) so refreshed host auth picks up
 # without needing a VM restart.
 _sync_auth() {
-  smolvm machine exec --name "$MACHINE_NAME" -e "HOME=$DEV_HOME" -- sh -c '
+  local name="$1"
+  smolvm machine exec --name "$name" -e "HOME=$DEV_HOME" -- sh -c '
     if [ -f /mnt/opencode-auth/auth.json ]; then
       mkdir -p "$HOME/.local/share/opencode"
       ln -sf /mnt/opencode-auth/auth.json "$HOME/.local/share/opencode/auth.json"
@@ -65,18 +42,21 @@ _sync_auth() {
   ' >/dev/null 2>&1 || true
 }
 
-# Runs "$@" interactively inside the machine, with /workspace = $PWD.
+# Runs "$@" interactively inside the machine dedicated to $PWD -- claiming a
+# warm spare from the pool (or creating one if the pool's empty) the first
+# time this directory is used, reusing the same machine every time after.
 #
 # Explicit PATH/HOME: smolvm's ad-hoc exec containers run as root with a
-# bare-bones PATH rather than the image's configured `dev` user/env (see
-# FASTEST_APPROACH.md) -- without this, none of the tools installed for
-# `dev` (node, opencode, claude, zig, ...) would resolve.
+# bare-bones PATH rather than the image's configured `dev` user/env --
+# without this, none of the tools installed for `dev` (node, opencode,
+# claude, zig, ...) would resolve.
 vm_run() {
-  _ensure_machine
-  if ! _machine_is_running; then
-    smolvm machine start --name "$MACHINE_NAME"
+  local machine
+  machine="$(resolve_machine_for_cwd)"
+  if ! _machine_is_running "$machine"; then
+    smolvm machine start --name "$machine"
   fi
-  _sync_auth
-  exec smolvm machine exec --name "$MACHINE_NAME" -it \
+  _sync_auth "$machine"
+  exec smolvm machine exec --name "$machine" -it \
     -e "PATH=$DEV_PATH" -e "HOME=$DEV_HOME" -w /workspace -- "$@"
 }

@@ -41,21 +41,13 @@ RUN useradd -m -s /bin/bash dev && \
 USER dev
 WORKDIR /home/dev
 
-# smolvm caps OCI layer export at 4GiB uncompressed. zig (in the dotfiles
-# Brewfile) drags in llvm+binutils+gcc (~3.3GB on its own), which pushes the
-# dotfiles setup layer past that cap. Install it standalone first so it lands
-# in its own layer; `brew bundle` in setup.sh below then sees it satisfied
-# and skips reinstalling it.
+# smolvm caps OCI layer export at 4GiB uncompressed, so we must install large
+# stuff in separate layers (Zig for example drags in LLVM and stuff)
 RUN NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" && \
     export PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH" && \
     brew install zig && \
     rm -rf "$(brew --cache)" "$HOME/.cache/Homebrew"
 
-# dotfiles' setup.sh stows its own config/opencode files (AGENTS.md, tui.json)
-# into ~/.config/opencode via symlinks. Everything that touches that directory
-# happens in this single layer, so later COPYs below only ever add to it
-# instead of flipping it between a plain dir and a stow symlink target across
-# layers (that type flip is what broke smolvm's layer merge).
 RUN git clone https://github.com/rasmus105/dotfiles-ubuntu /home/dev/.dotfiles && \
     cd /home/dev/.dotfiles && bash setup.sh && \
     export PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH" && \
@@ -65,7 +57,6 @@ RUN git clone https://github.com/rasmus105/dotfiles-ubuntu /home/dev/.dotfiles &
 
 ENV PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/home/dev/.cargo/bin:${PATH}"
 
-# install development stuff
 RUN npm install -g \
     opencode-ai \
     @anthropic-ai/claude-code \
@@ -73,7 +64,7 @@ RUN npm install -g \
     typescript-language-server \
     && npm cache clean --force
 
-# local stuff to copy into the image (overrides the dotfiles-managed defaults)
+# Overrides the dotfiles-managed defaults.
 COPY --chown=dev:dev config/opencode.json /home/dev/.config/opencode/opencode.json
 COPY --chown=dev:dev config/tui.json /home/dev/.config/opencode/tui.json
 

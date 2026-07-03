@@ -1,26 +1,18 @@
-image = "/Users/kargo/.local/share/smolvm/smolmachines-dev.tar"
-net = true
-
-cmd = ["sh", "-c", "/bin/zsh"]
+cpus = 4
+memory = 8192
+storage = 40
+overlay = 8
 
 [network]
 allow_hosts = [
-    "localhost",
-    "api.anthropic.com",
-    "api.openai.com",
-    "openrouter.ai",
-    "models.dev",
     "github.com",
     "api.github.com",
     "raw.githubusercontent.com",
     "registry.npmjs.org",
     "archive.ubuntu.com",
-    "security.ubuntu.com"
+    "security.ubuntu.com",
+    "api.anthropic.com",
+    "api.openai.com",
+    "openrouter.ai",
+    "models.dev",
 ]
-
-[dev]
-volumes = ["./:/app"]
-
-[auth]
-ssh_agent = false
-

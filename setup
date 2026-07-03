@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # Builds images/agent.Dockerfile, packs it into a portable .smolmachine, and
-# (re)creates the persistent `dev-box` machine from that pack. Re-run this
-# any time the Dockerfile or the dotfiles repo it pulls from changes.
-#
-# Assumes a working patched smolvm is already set up -- see FASTEST_APPROACH.md.
+# warms the spare pool from it. Re-run any time the Dockerfile or the
+# dotfiles repo it pulls from changes. Assumes a patched smolvm -- see README.
 set -euo pipefail
 cd "$(dirname "$(realpath "$0")")"
 source config/smolvm-env.sh
@@ -12,9 +10,8 @@ REGISTRY_CONTAINER="smolvm-wrapper-registry"
 REGISTRY_PORT=5000
 
 # The registry must be reachable BY IP from inside the guest VM -- "localhost"
-# there resolves to the guest's own loopback, not the host (see
-# FASTEST_APPROACH.md's "Known constraints"). Override with HOST_IP=... if
-# autodetection picks the wrong interface.
+# there resolves to the guest's own loopback, not the host. Override with
+# HOST_IP=... if autodetection picks the wrong interface.
 host_ip() {
   local ip
   for iface in en0 en1; do
@@ -31,16 +28,6 @@ host_ip() {
 
 HOST_IP="${HOST_IP:-$(host_ip)}"
 REGISTRY_REF="$HOST_IP:$REGISTRY_PORT/$IMAGE_TAG"
-
-ALLOW_HOST_ARGS=()
-for h in "${ALLOWED_HOSTS[@]}"; do
-  ALLOW_HOST_ARGS+=(--allow-host "$h")
-done
-
-SSH_AGENT_ARGS=()
-if [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
-  SSH_AGENT_ARGS+=(--ssh-agent)
-fi
 
 mkdir -p "$BUILD_DIR"
 
@@ -72,9 +59,7 @@ docker push "localhost:$REGISTRY_PORT/$IMAGE_TAG"
 echo "==> Building source VM ($SOURCE_MACHINE_NAME) from the registry image..."
 smolvm machine delete --name "$SOURCE_MACHINE_NAME" -f >/dev/null 2>&1 || true
 smolvm machine create --name "$SOURCE_MACHINE_NAME" \
-  --image "$REGISTRY_REF" \
-  --storage "$VM_STORAGE_GB" --overlay "$VM_OVERLAY_GB" --net \
-  --allow-host "$HOST_IP" "${ALLOW_HOST_ARGS[@]}"
+  --image "$REGISTRY_REF" -s "$SMOLFILE" --allow-host "$HOST_IP"
 smolvm machine start --name "$SOURCE_MACHINE_NAME"
 smolvm machine stop --name "$SOURCE_MACHINE_NAME"
 
@@ -85,13 +70,17 @@ smolvm pack create --from-vm "$SOURCE_MACHINE_NAME" -o "$PACK_FILE"
 echo "==> Cleaning up source VM..."
 smolvm machine delete --name "$SOURCE_MACHINE_NAME" -f
 
-echo "==> Recreating '$MACHINE_NAME' from the pack..."
-smolvm machine delete --name "$MACHINE_NAME" -f >/dev/null 2>&1 || true
-rm -f "/tmp/smolvm-${MACHINE_NAME}.mount"
-smolvm machine create --name "$MACHINE_NAME" --from "$PACK_SIDECAR" \
-  --cpus "$VM_CPUS" --mem "$VM_MEM" --net \
-  "${ALLOW_HOST_ARGS[@]}" "${SSH_AGENT_ARGS[@]}"
+# Existing spares were extracted from the now-stale pack -- they'd still
+# work, just without your latest Dockerfile/dotfiles changes. Directories
+# that already claimed a machine are untouched here; use vm-reset in a
+# given directory if you want that one refreshed too.
+echo "==> Discarding stale spares from the previous pack..."
+discard_unclaimed_pool_spares
+
+echo "==> Warming $POOL_SIZE spare(s) from the new pack..."
+replenish_pool
 
 echo ""
-echo "Done. '$MACHINE_NAME' is ready. Run vm-shell / vm-opencode / vm-claude to use it."
-echo "(First start after this does a one-time ~1min cost; every start after that is <1s.)"
+echo "Done. Run vm-shell / vm-opencode / vm-claude in any project directory to use it."
+echo "(A genuinely new directory claims a warm spare -- instant. An empty pool falls"
+echo " back to creating one on the spot, a one-time ~40s cost for that directory.)"

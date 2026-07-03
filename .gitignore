@@ -6,6 +6,3 @@
 *.tar
 *.smolmachine
 *.smolmachine.smolmachine
-
-# Stray OCI export from an earlier experiment, kept locally but not tracked.
-/rootfs/

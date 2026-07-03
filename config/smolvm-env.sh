@@ -1,58 +1,50 @@
 #!/usr/bin/env bash
-# Shared configuration for smolvm-wrapper scripts. Source this, don't execute it.
+# Shared config + the smolvm() wrapper function. Source, don't execute.
+#
+# VM-level settings (egress hosts, cpus/mem/storage/overlay) live in
+# Smolfile.toml, not here -- everything below is wrapper-only stuff Smolfile
+# has no concept of (pool bookkeeping, machine naming, where the patched
+# smolvm build lives).
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SMOLFILE="$REPO_ROOT/Smolfile.toml"
 
-# --- Patched smolvm build ---
-# Stock smolvm 1.3.8 has real bugs that break the fast-boot path this wrapper
-# depends on (layer merge crash, exec hang, dropped egress flags on
-# `machine create --from`). See FASTEST_APPROACH.md for the full story and
-# exact build steps. SMOLVM_SRC_DIR must point at that fork, already built.
+# Needs a patched smolvm build -- see README.md.
 SMOLVM_SRC_DIR="${SMOLVM_SRC_DIR:-$HOME/dev/public/smolvm}"
 SMOLVM_BIN="${SMOLVM_BIN:-$SMOLVM_SRC_DIR/target/release/smolvm}"
 export SMOLVM_AGENT_ROOTFS="${SMOLVM_AGENT_ROOTFS:-$SMOLVM_SRC_DIR/target/agent-rootfs-debug}"
 
 smolvm() {
   if [[ ! -x "$SMOLVM_BIN" ]]; then
-    echo "error: patched smolvm not found at $SMOLVM_BIN" >&2
-    echo "See FASTEST_APPROACH.md for how to build it, or set SMOLVM_BIN." >&2
+    echo "error: patched smolvm not found at $SMOLVM_BIN (see README.md)" >&2
     exit 1
   fi
   "$SMOLVM_BIN" "$@"
 }
 
-# --- Machine / image identity ---
-MACHINE_NAME="${MACHINE_NAME:-dev-box}"
+MACHINE_PREFIX="${MACHINE_PREFIX:-dev-box}"
 SOURCE_MACHINE_NAME="${SOURCE_MACHINE_NAME:-dev-box-source}"
 IMAGE_TAG="${IMAGE_TAG:-smolmachines-dev:latest}"
 BUILD_DIR="$REPO_ROOT/build"
 PACK_FILE="$BUILD_DIR/dev-box.smolmachine"
 PACK_SIDECAR="$PACK_FILE.smolmachine"
 
-# --- Resources for the source VM (setup) and the final machine ---
-VM_CPUS="${VM_CPUS:-4}"
-VM_MEM="${VM_MEM:-8192}"
-VM_STORAGE_GB="${VM_STORAGE_GB:-40}"
-VM_OVERLAY_GB="${VM_OVERLAY_GB:-8}"
+# Each directory gets its own machine (see README), claimed from a pool of
+# POOL_SIZE pre-warmed spares so a new directory doesn't pay the ~40s pack
+# extraction cost inline.
+POOL_SIZE="${POOL_SIZE:-3}"
+POOL_PREFIX="${MACHINE_PREFIX}-pool-"
 
-# --- Egress allowlist: hosts the workload is allowed to reach ---
-ALLOWED_HOSTS=(
-  github.com
-  api.github.com
-  raw.githubusercontent.com
-  registry.npmjs.org
-  archive.ubuntu.com
-  security.ubuntu.com
-  api.anthropic.com
-  api.openai.com
-  openrouter.ai
-  models.dev
-)
+STATE_DIR="${STATE_DIR:-$HOME/.cache/smolvm-wrapper}"
+mkdir -p "$STATE_DIR"
+ASSIGNMENTS_FILE="$STATE_DIR/assignments.tsv"
+POOL_COUNTER_FILE="$STATE_DIR/pool-counter"
+POOL_LOCK_DIR="$STATE_DIR/pool.lock"
+REPLENISH_LOCK_DIR="$STATE_DIR/replenish.lock"
 
-# images/agent.Dockerfile's ENV PATH and dotfiles are configured for the
-# `dev` user, but smolvm's ad-hoc exec containers always run as root with a
-# bare-bones PATH and don't inherit the image's configured user/env (a
-# pre-existing smolvm behavior -- see FASTEST_APPROACH.md). Set these
-# explicitly on every exec so tools installed for `dev` still resolve.
+source "$REPO_ROOT/bin/lib-pool.sh"
+
+# smolvm's exec containers run as root with a bare PATH, not the image's
+# `dev` user/env -- set these on every exec so installed tools resolve.
 DEV_PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/home/dev/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 DEV_HOME="/home/dev"
