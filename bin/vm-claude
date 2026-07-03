@@ -2,7 +2,4 @@
 set -euo pipefail
 source "$(dirname "$(realpath "$0")")/common.sh"
 
-vm_run sh -c '
-  [ -f /tmp/.claude-api-key ] && export ANTHROPIC_API_KEY="$(cat /tmp/.claude-api-key)"
-  exec claude --dangerously-skip-permissions
-'
+vm_run claude --dangerously-skip-permissions

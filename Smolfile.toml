@@ -17,4 +17,7 @@ allow_hosts = [
     "api.openai.com",
     "openrouter.ai",
     "models.dev",
+    "api.deepseek.com",
+    "api.cerebras.ai",
+    "api.githubcopilot.com", # opencode's github-copilot provider
 ]

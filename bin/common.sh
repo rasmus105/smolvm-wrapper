@@ -5,16 +5,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../config/smolvm-env.sh"
 
 OPENCODE_AUTH="$HOME/.local/share/opencode/auth.json"
-CLAUDE_AUTH="$HOME/.local/share/claude-code/auth.json"
 
 # Static across every directory's machine (unlike /workspace, which is set
 # per-machine at claim time in resolve_machine_for_cwd) -- read by lib-pool.sh.
 AUTH_VOLUME_ARGS=()
 if [[ -d "${OPENCODE_AUTH%/*}" ]]; then
   AUTH_VOLUME_ARGS+=(-v "${OPENCODE_AUTH%/*}:/mnt/opencode-auth:ro")
-fi
-if [[ -d "${CLAUDE_AUTH%/*}" ]]; then
-  AUTH_VOLUME_ARGS+=(-v "${CLAUDE_AUTH%/*}:/mnt/claude-auth:ro")
 fi
 
 _machine_is_running() {
@@ -23,21 +19,15 @@ _machine_is_running() {
   echo "$status" | grep -qi '"running"'
 }
 
-# Best-effort: symlink host auth into place if the mounts are present. Runs
-# on every vm_run (not just at claim time) so refreshed host auth picks up
-# without needing a VM restart.
+# Best-effort: symlink host opencode auth into place if the mount is present.
+# Runs on every vm_run (not just at claim time) so refreshed host auth picks
+# up without needing a VM restart.
 _sync_auth() {
   local name="$1"
   smolvm machine exec --name "$name" -- su - dev -c '
     if [ -f /mnt/opencode-auth/auth.json ]; then
       mkdir -p "$HOME/.local/share/opencode"
       ln -sf /mnt/opencode-auth/auth.json "$HOME/.local/share/opencode/auth.json"
-    fi
-    if [ -f /mnt/claude-auth/auth.json ]; then
-      KEY=$(jq -r .apiKey /mnt/claude-auth/auth.json 2>/dev/null)
-      if [ -n "$KEY" ] && [ "$KEY" != "null" ]; then
-        echo "$KEY" > /tmp/.claude-api-key
-      fi
     fi
   ' >/dev/null 2>&1 || true
 }
