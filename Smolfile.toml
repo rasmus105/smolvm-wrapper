@@ -8,6 +8,8 @@ allow_hosts = [
     "github.com",
     "api.github.com",
     "raw.githubusercontent.com",
+    "objects.githubusercontent.com", # GitHub release assets (e.g. blink.cmp's prebuilt matcher)
+    "codeload.github.com",           # GitHub tarball/zip downloads
     "registry.npmjs.org",
     "archive.ubuntu.com",
     "security.ubuntu.com",

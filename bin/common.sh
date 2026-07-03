@@ -28,7 +28,7 @@ _machine_is_running() {
 # without needing a VM restart.
 _sync_auth() {
   local name="$1"
-  smolvm machine exec --name "$name" -e "HOME=$DEV_HOME" -- sh -c '
+  smolvm machine exec --name "$name" -- su - dev -c '
     if [ -f /mnt/opencode-auth/auth.json ]; then
       mkdir -p "$HOME/.local/share/opencode"
       ln -sf /mnt/opencode-auth/auth.json "$HOME/.local/share/opencode/auth.json"
@@ -46,17 +46,20 @@ _sync_auth() {
 # warm spare from the pool (or creating one if the pool's empty) the first
 # time this directory is used, reusing the same machine every time after.
 #
-# Explicit PATH/HOME: smolvm's ad-hoc exec containers run as root with a
-# bare-bones PATH rather than the image's configured `dev` user/env --
-# without this, none of the tools installed for `dev` (node, opencode,
-# claude, zig, ...) would resolve.
+# smolvm's ad-hoc exec containers run as root at the VM level (there's no
+# --user flag), not as the image's configured `dev` user -- so we drop
+# privileges ourselves. `su` (not sudo -- pack extraction on macOS leaves
+# every file host-user-owned rather than root:root, which fails sudo's
+# ownership hardening check on /etc/sudoers) via a real login shell, which
+# also means dotfiles' own PATH setup applies instead of us hand-maintaining
+# one. `su -` chdirs to dev's $HOME, so `/workspace` is restored explicitly.
 vm_run() {
-  local machine
+  local machine cmd
   machine="$(resolve_machine_for_cwd)"
   if ! _machine_is_running "$machine"; then
     smolvm machine start --name "$machine"
   fi
   _sync_auth "$machine"
-  exec smolvm machine exec --name "$machine" -it \
-    -e "PATH=$DEV_PATH" -e "HOME=$DEV_HOME" -w /workspace -- "$@"
+  printf -v cmd '%q ' "$@"
+  exec smolvm machine exec --name "$machine" -it -- su - dev -c "cd /workspace && $cmd"
 }

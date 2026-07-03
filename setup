@@ -31,8 +31,12 @@ REGISTRY_REF="$HOST_IP:$REGISTRY_PORT/$IMAGE_TAG"
 
 mkdir -p "$BUILD_DIR"
 
+# dev's uid/gid is built to match ours -- see the Dockerfile's comment on why
+# (pack extraction on macOS can't chown to any other uid).
 echo "==> Building $IMAGE_TAG from images/agent.Dockerfile..."
-docker build -f images/agent.Dockerfile -t "$IMAGE_TAG" .
+docker build -f images/agent.Dockerfile \
+  --build-arg HOST_UID="$(id -u)" --build-arg HOST_GID="$(id -g)" \
+  -t "$IMAGE_TAG" .
 
 echo "==> Starting local registry on port $REGISTRY_PORT..."
 docker rm -f "$REGISTRY_CONTAINER" >/dev/null 2>&1 || true

@@ -43,8 +43,3 @@ POOL_LOCK_DIR="$STATE_DIR/pool.lock"
 REPLENISH_LOCK_DIR="$STATE_DIR/replenish.lock"
 
 source "$REPO_ROOT/bin/lib-pool.sh"
-
-# smolvm's exec containers run as root with a bare PATH, not the image's
-# `dev` user/env -- set these on every exec so installed tools resolve.
-DEV_PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/home/dev/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-DEV_HOME="/home/dev"

@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     g++ \
     gdb \
     git \
+    iputils-ping \
     jq \
     less \
     locales \
@@ -35,27 +36,43 @@ ENV LANGUAGE=en_US:en
 ENV LC_ALL=en_US.UTF-8
 ENV TERM=xterm-256color
 
-RUN useradd -m -s /bin/bash dev && \
+# Matches the host user's uid/gid (see setup) -- smolvm's pack extraction on
+# macOS is unprivileged, so a chown to any *other* uid/gid silently fails and
+# the file just keeps the extracting host user's ownership. Making `dev` that
+# same uid/gid turns those chowns into no-ops, so dev's own files actually
+# land owned by dev instead of unwritable by anyone but the host user.
+ARG HOST_UID=1000
+ARG HOST_GID=1000
+RUN (groupadd -g "$HOST_GID" devhost 2>/dev/null || true) && \
+    useradd -m -u "$HOST_UID" -g "$HOST_GID" -s /bin/bash dev && \
     echo "dev ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 USER dev
 WORKDIR /home/dev
 
-# smolvm caps OCI layer export at 4GiB uncompressed, so we must install large
-# stuff in separate layers (Zig for example drags in LLVM and stuff)
-RUN NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" && \
-    export PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH" && \
-    brew install zig && \
-    rm -rf "$(brew --cache)" "$HOME/.cache/Homebrew"
+RUN NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+ENV PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/home/dev/.cargo/bin:${PATH}"
 
+# smolvm caps OCI layer export at 4GiB uncompressed -- zig drags in LLVM+binutils+gcc
+# (~3.3GB), so it gets its own layer. Add other large packages the same way.
+RUN brew install zig && rm -rf "$(brew --cache)" "$HOME/.cache/Homebrew"
+
+# zsh -i forces .zshrc to be sourced even with no TTY, which is what triggers
+# antidote's one-time plugin clone (see home/.zsh/shell.zsh) -- without this
+# it happens on your first real vm-shell instead.
+#
+# The nvim warmup opens a real buffer (not just +qa) because mason/blink.cmp
+# only load on BufReadPost/BufNewFile (see config/nvim/lua/config/lsp.lua) --
+# `sleep 90` gives their background installs (LSP servers, blink's fuzzy-
+# matcher download) time to finish while the build still has full network
+# access, instead of stalling on egress-filtered hosts on first real use.
 RUN git clone https://github.com/rasmus105/dotfiles-ubuntu /home/dev/.dotfiles && \
     cd /home/dev/.dotfiles && bash setup.sh && \
-    export PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH" && \
+    zsh -ilc 'exit' 2>/dev/null; \
     brew install node && \
-    nvim --headless +qa 2>/dev/null; \
+    echo 'return 1' > /tmp/warmup.lua && \
+    nvim --headless -c 'edit /tmp/warmup.lua' -c 'sleep 90' +qa 2>/dev/null; \
     rm -rf "$(brew --cache)" "$HOME/.cache/Homebrew"
-
-ENV PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/home/dev/.cargo/bin:${PATH}"
 
 RUN npm install -g \
     opencode-ai \
