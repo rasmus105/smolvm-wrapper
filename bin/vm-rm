@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$(realpath "$0")")/common.sh"
+
+remove_machine_for_dir() {
+  local dir="$1" machine
+  machine="$(_assigned_machine_for_dir "$dir")"
+
+  if [[ -z "$machine" ]]; then
+    echo "No machine was assigned to this directory."
+    return 0
+  fi
+
+  echo "Deleting machine '$machine' assigned to $dir..."
+  smolvm machine delete --name "$machine" -f 2>/dev/null || true
+  _with_pool_lock _remove_assignment "$dir"
+  echo "Removed. The next vm-* command here will claim a new machine."
+}
+
+dir="$(pwd -P)"
+_with_directory_lock "$dir" remove_machine_for_dir "$dir"

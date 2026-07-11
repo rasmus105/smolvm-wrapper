@@ -85,4 +85,11 @@ RUN npm install -g \
 COPY --chown=dev:dev config/opencode.json /home/dev/.config/opencode/opencode.json
 COPY --chown=dev:dev config/tui.json /home/dev/.config/opencode/tui.json
 
+COPY images/entrypoint.sh /usr/local/bin/entrypoint.sh
+USER root
+RUN chmod +x /usr/local/bin/entrypoint.sh
+USER dev
+
 WORKDIR /workspace
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["/bin/bash"]

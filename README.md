@@ -25,12 +25,14 @@ several run at once. Similar to [docker-sandbox](https://github.com/rasmus105/do
 ln -sf $(pwd)/bin/vm-opencode ~/.local/bin/vm-opencode
 ln -sf $(pwd)/bin/vm-claude   ~/.local/bin/vm-claude
 ln -sf $(pwd)/bin/vm-shell    ~/.local/bin/vm-shell
-ln -sf $(pwd)/bin/vm-reset    ~/.local/bin/vm-reset
+ln -sf $(pwd)/bin/vm-rm       ~/.local/bin/vm-rm
+ln -sf $(pwd)/bin/vm-status   ~/.local/bin/vm-status
 ```
 
 Re-run `./setup` whenever `images/agent.Dockerfile` changes. It rebuilds the
 pack and refreshes the spare pool, but directories that already claimed a
-machine keep running their old one -- run `vm-reset` in those to update them.
+machine keep running their old one -- run `vm-rm`, then launch a `vm-*` command
+there to claim a fresh one.
 
 ## Usage
 
@@ -40,7 +42,8 @@ cd ~/dev/my-project/
 vm-opencode   # Launch opencode
 vm-claude     # Launch claude-code
 vm-shell      # Interactive shell
-vm-reset      # Wipe this directory's machine, claim a fresh one
+vm-rm         # Delete this directory's machine and assignment
+vm-status     # Show assignments, locks, and smolvm machine state
 ```
 
 The first run in a directory claims a machine for it -- a warm spare if the
@@ -52,5 +55,9 @@ different machines, so they're fully isolated and can run concurrently; set
 Each machine is persistent -- installed packages and scratch files survive
 across sessions. Anything worth keeping long-term belongs in
 `images/agent.Dockerfile` instead. Allowed networks are defined in
-`Smolfile.toml`. After changing `Smotfile.toml`, you must run `./setup` and
-`vm-reset` for the changes to take effect.
+`Smolfile.toml`. After changing `Smolfile.toml`, you must run `./setup`, then
+`vm-rm` and a `vm-*` command in each directory you want to refresh.
+
+`vm-status` shows the current directory-to-machine assignments, active locks,
+and machine inventory. Locks live in the per-user temporary directory and are
+reclaimed automatically when their owning process is gone.

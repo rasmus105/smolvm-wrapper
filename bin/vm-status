@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$(realpath "$0")")/common.sh"
+
+echo "State: $STATE_DIR"
+echo "Locks: $LOCK_DIR"
+echo
+
+echo "Assignments:"
+if [[ -f "$ASSIGNMENTS_FILE" ]]; then
+  column -ts $'\t' "$ASSIGNMENTS_FILE"
+else
+  echo "  none"
+fi
+echo
+
+echo "Locks:"
+found_lock=false
+for lock in "$LOCK_DIR"/*.lock; do
+  [[ -d "$lock" ]] || continue
+  found_lock=true
+  owner_pid=$(cat "$lock/owner-pid" 2>/dev/null || true)
+  age=$(( $(date +%s) - $(stat -f %m "$lock") ))
+  if _lock_owner_is_alive "$owner_pid"; then
+    echo "  $lock: held by PID $owner_pid (${age}s old)"
+  elif [[ -n "$owner_pid" ]]; then
+    echo "  $lock: stale PID $owner_pid (${age}s old)"
+  else
+    echo "  $lock: incomplete (${age}s old)"
+  fi
+done
+if [[ "$found_lock" == false ]]; then
+  echo "  none"
+fi
+echo
+
+echo "Machines:"
+smolvm machine ls --json | jq -r '.[] |
+  "  \(.name): state=\(.state), storage_gb=\(.storage_gb // "-"), overlay_gb=\(.overlay_gb // "-")"'

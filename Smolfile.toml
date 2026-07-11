@@ -2,22 +2,4 @@ cpus = 4
 memory = 8192
 storage = 40
 overlay = 8
-
-[network]
-allow_hosts = [
-    "github.com",
-    "api.github.com",
-    "raw.githubusercontent.com",
-    "objects.githubusercontent.com", # GitHub release assets (e.g. blink.cmp's prebuilt matcher)
-    "codeload.github.com",           # GitHub tarball/zip downloads
-    "registry.npmjs.org",
-    "archive.ubuntu.com",
-    "security.ubuntu.com",
-    "api.anthropic.com",
-    "api.openai.com",
-    "openrouter.ai",
-    "models.dev",
-    "api.deepseek.com",
-    "api.cerebras.ai",
-    "api.githubcopilot.com", # opencode's github-copilot provider
-]
+net = true

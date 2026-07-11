@@ -29,62 +29,66 @@ host_ip() {
 HOST_IP="${HOST_IP:-$(host_ip)}"
 REGISTRY_REF="$HOST_IP:$REGISTRY_PORT/$IMAGE_TAG"
 
-mkdir -p "$BUILD_DIR"
+run_setup() {
+  mkdir -p "$BUILD_DIR"
 
-# dev's uid/gid is built to match ours -- see the Dockerfile's comment on why
-# (pack extraction on macOS can't chown to any other uid).
-echo "==> Building $IMAGE_TAG from images/agent.Dockerfile..."
-docker build -f images/agent.Dockerfile \
-  --build-arg HOST_UID="$(id -u)" --build-arg HOST_GID="$(id -g)" \
-  -t "$IMAGE_TAG" .
+  # dev's uid/gid is built to match ours -- see the Dockerfile's comment on why
+  # (pack extraction on macOS can't chown to any other uid).
+  echo "==> Building $IMAGE_TAG from images/agent.Dockerfile..."
+  docker build -f images/agent.Dockerfile \
+    --build-arg HOST_UID="$(id -u)" --build-arg HOST_GID="$(id -g)" \
+    -t "$IMAGE_TAG" .
 
-echo "==> Starting local registry on port $REGISTRY_PORT..."
-docker rm -f "$REGISTRY_CONTAINER" >/dev/null 2>&1 || true
-docker run -d -p "$REGISTRY_PORT:5000" --name "$REGISTRY_CONTAINER" registry:2 >/dev/null
+  echo "==> Starting local registry on port $REGISTRY_PORT..."
+  docker rm -f "$REGISTRY_CONTAINER" >/dev/null 2>&1 || true
+  docker run -d -p "$REGISTRY_PORT:5000" --name "$REGISTRY_CONTAINER" registry:2 >/dev/null
 
-cleanup_registry() {
-  echo "==> Stopping local registry..."
-  docker stop "$REGISTRY_CONTAINER" >/dev/null 2>&1 || true
-  docker rm "$REGISTRY_CONTAINER" >/dev/null 2>&1 || true
+  cleanup_registry() {
+    echo "==> Stopping local registry..."
+    docker stop "$REGISTRY_CONTAINER" >/dev/null 2>&1 || true
+    docker rm "$REGISTRY_CONTAINER" >/dev/null 2>&1 || true
+  }
+  trap cleanup_registry EXIT
+
+  # Push via "localhost" -- Docker trusts that as insecure/plain-HTTP by
+  # default, but not an arbitrary LAN IP (it'd demand TLS and fail). The
+  # registry's storage is shared regardless of which host:port reached it, so
+  # this is the same repository smolvm will pull via $REGISTRY_REF below.
+  echo "==> Pushing to localhost:$REGISTRY_PORT/$IMAGE_TAG..."
+  docker tag "$IMAGE_TAG" "localhost:$REGISTRY_PORT/$IMAGE_TAG"
+  docker push "localhost:$REGISTRY_PORT/$IMAGE_TAG"
+
+  # `pack create --from-vm` (below) only works on a VM created from a registry
+  # reference, not a local archive -- it re-pulls the manifest to enumerate
+  # base layers. So we build a throwaway source VM here purely to hand to pack.
+  echo "==> Building source VM ($SOURCE_MACHINE_NAME) from the registry image..."
+  smolvm machine delete --name "$SOURCE_MACHINE_NAME" -f >/dev/null 2>&1 || true
+  smolvm machine create --name "$SOURCE_MACHINE_NAME" \
+    --image "$REGISTRY_REF" -s "$SMOLFILE" --allow-host "$HOST_IP"
+  smolvm machine start --name "$SOURCE_MACHINE_NAME"
+  smolvm machine stop --name "$SOURCE_MACHINE_NAME"
+
+  echo "==> Packing portable .smolmachine..."
+  rm -f "$PACK_FILE" "$PACK_SIDECAR"
+  smolvm pack create --from-vm "$SOURCE_MACHINE_NAME" -o "$PACK_FILE"
+
+  echo "==> Cleaning up source VM..."
+  smolvm machine delete --name "$SOURCE_MACHINE_NAME" -f
+
+  # Existing spares were extracted from the now-stale pack -- they'd still
+  # work, just without your latest Dockerfile/dotfiles changes. Directories
+  # that already claimed a machine are untouched here; use vm-rm in a
+  # given directory if you want that one refreshed too.
+  echo "==> Discarding stale spares from the previous pack..."
+  discard_unclaimed_pool_spares
+
+  echo "==> Warming $POOL_SIZE spare(s) from the new pack..."
+  _with_replenish_lock _replenish_pool_locked
+
+  echo ""
+  echo "Done. Run vm-shell / vm-opencode / vm-claude in any project directory to use it."
+  echo "(A genuinely new directory claims a warm spare -- instant. An empty pool falls"
+  echo " back to creating one on the spot, a one-time ~40s cost for that directory.)"
 }
-trap cleanup_registry EXIT
 
-# Push via "localhost" -- Docker trusts that as insecure/plain-HTTP by
-# default, but not an arbitrary LAN IP (it'd demand TLS and fail). The
-# registry's storage is shared regardless of which host:port reached it, so
-# this is the same repository smolvm will pull via $REGISTRY_REF below.
-echo "==> Pushing to localhost:$REGISTRY_PORT/$IMAGE_TAG..."
-docker tag "$IMAGE_TAG" "localhost:$REGISTRY_PORT/$IMAGE_TAG"
-docker push "localhost:$REGISTRY_PORT/$IMAGE_TAG"
-
-# `pack create --from-vm` (below) only works on a VM created from a registry
-# reference, not a local archive -- it re-pulls the manifest to enumerate
-# base layers. So we build a throwaway source VM here purely to hand to pack.
-echo "==> Building source VM ($SOURCE_MACHINE_NAME) from the registry image..."
-smolvm machine delete --name "$SOURCE_MACHINE_NAME" -f >/dev/null 2>&1 || true
-smolvm machine create --name "$SOURCE_MACHINE_NAME" \
-  --image "$REGISTRY_REF" -s "$SMOLFILE" --allow-host "$HOST_IP"
-smolvm machine start --name "$SOURCE_MACHINE_NAME"
-smolvm machine stop --name "$SOURCE_MACHINE_NAME"
-
-echo "==> Packing portable .smolmachine..."
-rm -f "$PACK_FILE" "$PACK_SIDECAR"
-smolvm pack create --from-vm "$SOURCE_MACHINE_NAME" -o "$PACK_FILE"
-
-echo "==> Cleaning up source VM..."
-smolvm machine delete --name "$SOURCE_MACHINE_NAME" -f
-
-# Existing spares were extracted from the now-stale pack -- they'd still
-# work, just without your latest Dockerfile/dotfiles changes. Directories
-# that already claimed a machine are untouched here; use vm-reset in a
-# given directory if you want that one refreshed too.
-echo "==> Discarding stale spares from the previous pack..."
-discard_unclaimed_pool_spares
-
-echo "==> Warming $POOL_SIZE spare(s) from the new pack..."
-replenish_pool
-
-echo ""
-echo "Done. Run vm-shell / vm-opencode / vm-claude in any project directory to use it."
-echo "(A genuinely new directory claims a warm spare -- instant. An empty pool falls"
-echo " back to creating one on the spot, a one-time ~40s cost for that directory.)"
+_with_setup_lock run_setup
